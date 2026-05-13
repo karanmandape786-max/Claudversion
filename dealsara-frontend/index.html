@@ -2729,6 +2729,7 @@ const RightSidebar = ({ onNav, toast, onSearch, authToken }) => {
 };
 
 // ─── LEFT SIDEBAR ──────────────────────────────────────────────────────────────
+// ─── LEFT SIDEBAR ──────────────────────────────────────────────────────────────
 const LeftSidebar = ({ page, onNav, toast, unread, authUser, onLogout, onLogin }) => {
   const NAV = [
     {id:"home",label:"Home",Icon:I.Home},
@@ -2742,11 +2743,6 @@ const LeftSidebar = ({ page, onNav, toast, unread, authUser, onLogout, onLogin }
   const uname = authUser?.name||"";
   const handle = "@"+(uname||"user").toLowerCase().replace(/\s/g,"");
 
-    {id:"dashboard",label:"Dashboard",Icon:I.Dash},
-    {id:"profile",label:"Profile",Icon:I.User},
-    {id:"competition",label:"Competition",Icon:I.Trophy,gold:true},
-    {id:"admin",label:"Admin",Icon:I.Shield},
-  ];
   return (
     <aside className="left">
       <div className="nav-logo" onClick={()=>onNav("home")}>
@@ -2790,6 +2786,7 @@ const LeftSidebar = ({ page, onNav, toast, unread, authUser, onLogout, onLogin }
     </aside>
   );
 };
+          
 
 // ─── MOBILE NAV ───────────────────────────────────────────────────────────────
 const MobileNav = ({ page, onNav, unread, onPlusClick }) => {
