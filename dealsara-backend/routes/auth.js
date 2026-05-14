@@ -3,21 +3,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { v4: uuidv4 } = require("uuid");
 const { db, saveData, supabase, useSupabase } = require("../db");
-
-const JWT_SECRET = process.env.JWT_SECRET || "dealsara-super-secret-key-2024";
-
-// Middleware to get user from token
-const auth = (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  const token = authHeader && authHeader.split(" ")[1];
-  if (!token) return res.status(401).json({ message: "Access token required" });
-  
-  jwt.verify(token, JWT_SECRET, (err, decoded) => {
-    if (err) return res.status(403).json({ message: "Invalid or expired token" });
-    req.userId = decoded.id;
-    next();
-  });
-};
+const { auth, JWT_SECRET } = require("../middleware/auth");
 
 function makeToken(user) {
   return jwt.sign(
@@ -42,9 +28,8 @@ router.post("/register", async (req, res) => {
       return res.status(400).json({ message: "Name, email and password are required" });
     }
 
-    // Check if user exists
     let existingUser = null;
-    
+
     if (useSupabase && supabase) {
       const { data: existing } = await supabase
         .from("users")
@@ -95,7 +80,7 @@ router.post("/register", async (req, res) => {
         })
         .select()
         .single();
-      
+
       if (error) throw error;
       savedUser = { ...newUser, ...user };
     } else {
@@ -128,7 +113,7 @@ router.post("/login", async (req, res) => {
         .select("*")
         .ilike("email", email.trim())
         .single();
-      
+
       if (error || !userData) {
         return res.status(401).json({ message: "Invalid email or password" });
       }
@@ -145,7 +130,6 @@ router.post("/login", async (req, res) => {
       return res.status(401).json({ message: "Invalid email or password" });
     }
 
-    // Convert field names for consistency
     const responseUser = {
       id: user.id,
       name: user.name,
@@ -265,7 +249,7 @@ router.get("/me", auth, async (req, res) => {
         .select("*")
         .eq("id", req.userId)
         .single();
-      
+
       if (error || !userData) {
         return res.status(404).json({ message: "User not found" });
       }
@@ -329,7 +313,7 @@ router.put("/profile", auth, async (req, res) => {
     } else {
       const index = db.users.findIndex(u => u.id === req.userId);
       if (index === -1) return res.status(404).json({ message: "User not found" });
-      
+
       db.users[index] = { ...db.users[index], ...updates };
       saveData();
       updatedUser = db.users[index];
