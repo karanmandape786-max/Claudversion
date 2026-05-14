@@ -1,12 +1,27 @@
 const router = require("express").Router();
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const supabase = require("../supabase");
-const { auth, JWT_SECRET } = require("../middleware/auth");
+const { v4: uuidv4 } = require("uuid");
+const { db, saveData, supabase, useSupabase } = require("../db");
+
+const JWT_SECRET = process.env.JWT_SECRET || "dealsara-super-secret-key-2024";
+
+// Middleware to get user from token
+const auth = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  const token = authHeader && authHeader.split(" ")[1];
+  if (!token) return res.status(401).json({ message: "Access token required" });
+  
+  jwt.verify(token, JWT_SECRET, (err, decoded) => {
+    if (err) return res.status(403).json({ message: "Invalid or expired token" });
+    req.userId = decoded.id;
+    next();
+  });
+};
 
 function makeToken(user) {
   return jwt.sign(
-    { id: user.id, email: user.email, isAdmin: user.is_admin || false },
+    { id: user.id, email: user.email, isAdmin: user.isAdmin || user.is_admin || false },
     JWT_SECRET,
     { expiresIn: "30d" }
   );
@@ -17,67 +32,143 @@ function safeUser(u) {
   return rest;
 }
 
-// POST /api/auth/register
+// ──────────────────────────────────────────────────────────────────────────────
+// REGISTER
+// ──────────────────────────────────────────────────────────────────────────────
 router.post("/register", async (req, res) => {
   try {
     const { name, email, password } = req.body;
-    if (!name || !email || !password)
+    if (!name || !email || !password) {
       return res.status(400).json({ message: "Name, email and password are required" });
+    }
 
-    // Check existing
-    const { data: existing } = await supabase
-      .from("users")
-      .select("id")
-      .ilike("email", email.trim())
-      .single();
+    // Check if user exists
+    let existingUser = null;
+    
+    if (useSupabase && supabase) {
+      const { data: existing } = await supabase
+        .from("users")
+        .select("id")
+        .ilike("email", email.trim())
+        .single();
+      existingUser = existing;
+    } else {
+      existingUser = db.users.find(u => u.email === email);
+    }
 
-    if (existing) return res.status(409).json({ message: "Email already in use" });
+    if (existingUser) {
+      return res.status(409).json({ message: "Email already in use" });
+    }
 
     const hashed = await bcrypt.hash(password, 10);
-    const { data: user, error } = await supabase
-      .from("users")
-      .insert({
-        name: name.trim(),
-        email: email.toLowerCase().trim(),
-        password: hashed,
-        verified: false,
-        is_admin: false,
-      })
-      .select()
-      .single();
+    const newUser = {
+      id: uuidv4(),
+      name: name.trim(),
+      email: email.toLowerCase().trim(),
+      password: hashed,
+      avatar: null,
+      bio: "",
+      location: "",
+      phone: "",
+      verified: false,
+      isAdmin: false,
+      createdAt: new Date().toISOString(),
+      followers: 0,
+      following: 0,
+      rating: 0,
+      totalSales: 0,
+    };
 
-    if (error) throw error;
-    res.status(201).json({ user: safeUser(user), token: makeToken(user) });
+    let savedUser = newUser;
+
+    if (useSupabase && supabase) {
+      const { data: user, error } = await supabase
+        .from("users")
+        .insert({
+          id: newUser.id,
+          name: newUser.name,
+          email: newUser.email,
+          password: hashed,
+          verified: false,
+          is_admin: false,
+          created_at: newUser.createdAt,
+        })
+        .select()
+        .single();
+      
+      if (error) throw error;
+      savedUser = { ...newUser, ...user };
+    } else {
+      db.users.push(newUser);
+      saveData();
+    }
+
+    res.status(201).json({ user: safeUser(savedUser), token: makeToken(savedUser) });
   } catch (e) {
+    console.error("Register error:", e);
     res.status(500).json({ message: e.message });
   }
 });
 
-// POST /api/auth/login
+// ──────────────────────────────────────────────────────────────────────────────
+// LOGIN
+// ──────────────────────────────────────────────────────────────────────────────
 router.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
-    if (!email || !password)
+    if (!email || !password) {
       return res.status(400).json({ message: "Email and password required" });
+    }
 
-    const { data: user, error } = await supabase
-      .from("users")
-      .select("*")
-      .ilike("email", email.trim())
-      .single();
+    let user = null;
 
-    if (error || !user) return res.status(401).json({ message: "Invalid email or password" });
+    if (useSupabase && supabase) {
+      const { data: userData, error } = await supabase
+        .from("users")
+        .select("*")
+        .ilike("email", email.trim())
+        .single();
+      
+      if (error || !userData) {
+        return res.status(401).json({ message: "Invalid email or password" });
+      }
+      user = userData;
+    } else {
+      user = db.users.find(u => u.email === email);
+      if (!user) {
+        return res.status(401).json({ message: "Invalid email or password" });
+      }
+    }
 
     const valid = await bcrypt.compare(password, user.password || "");
-    if (!valid) return res.status(401).json({ message: "Invalid email or password" });
+    if (!valid) {
+      return res.status(401).json({ message: "Invalid email or password" });
+    }
 
-    res.json({ user: safeUser(user), token: makeToken(user) });
+    // Convert field names for consistency
+    const responseUser = {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      avatar: user.avatar,
+      bio: user.bio,
+      location: user.location,
+      phone: user.phone,
+      verified: user.verified || false,
+      isAdmin: user.isAdmin || user.is_admin || false,
+      createdAt: user.createdAt || user.created_at,
+    };
+
+    res.json({ user: responseUser, token: makeToken(responseUser) });
   } catch (e) {
+    console.error("Login error:", e);
     res.status(500).json({ message: e.message });
   }
 });
 
-// POST /api/auth/google
+// ──────────────────────────────────────────────────────────────────────────────
+// GOOGLE LOGIN
+// ──────────────────────────────────────────────────────────────────────────────
 router.post("/google", async (req, res) => {
   try {
     const { credential } = req.body;
@@ -89,53 +180,130 @@ router.post("/google", async (req, res) => {
     const { email, name, sub, picture } = payload;
     if (!email) return res.status(400).json({ message: "Email not in token" });
 
-    // Find or create user
-    let { data: user } = await supabase
-      .from("users")
-      .select("*")
-      .ilike("email", email.toLowerCase())
-      .single();
+    let user = null;
 
-    if (!user) {
-      const { data: newUser, error } = await supabase
+    if (useSupabase && supabase) {
+      let { data: existingUser } = await supabase
         .from("users")
-        .insert({
+        .select("*")
+        .ilike("email", email.toLowerCase())
+        .single();
+
+      if (!existingUser) {
+        const { data: newUser, error } = await supabase
+          .from("users")
+          .insert({
+            id: uuidv4(),
+            name: name || email.split("@")[0],
+            email: email.toLowerCase(),
+            password: "",
+            avatar: picture || null,
+            google_id: sub,
+            verified: true,
+            is_admin: false,
+            created_at: new Date().toISOString(),
+          })
+          .select()
+          .single();
+        if (error) throw error;
+        user = newUser;
+      } else {
+        user = existingUser;
+      }
+    } else {
+      let existingUser = db.users.find(u => u.email === email);
+      if (!existingUser) {
+        const newUser = {
+          id: uuidv4(),
           name: name || email.split("@")[0],
           email: email.toLowerCase(),
           password: "",
           avatar: picture || null,
           google_id: sub,
           verified: true,
-          is_admin: false,
-        })
-        .select()
-        .single();
-      if (error) throw error;
-      user = newUser;
+          isAdmin: false,
+          createdAt: new Date().toISOString(),
+          followers: 0,
+          following: 0,
+          rating: 0,
+          totalSales: 0,
+        };
+        db.users.push(newUser);
+        saveData();
+        user = newUser;
+      } else {
+        user = existingUser;
+      }
     }
 
-    res.json({ user: safeUser(user), token: makeToken(user) });
+    const responseUser = {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      avatar: user.avatar,
+      verified: user.verified || true,
+      isAdmin: user.isAdmin || user.is_admin || false,
+    };
+
+    res.json({ user: responseUser, token: makeToken(responseUser) });
   } catch (e) {
+    console.error("Google login error:", e);
     res.status(500).json({ message: e.message });
   }
 });
 
-// GET /api/auth/me
+// ──────────────────────────────────────────────────────────────────────────────
+// GET CURRENT USER (ME)
+// ──────────────────────────────────────────────────────────────────────────────
 router.get("/me", auth, async (req, res) => {
   try {
-    const { data: user, error } = await supabase
-      .from("users")
-      .select("*")
-      .eq("id", req.userId)
-      .single();
-    if (error || !user) return res.status(404).json({ message: "User not found" });
-    res.json(safeUser(user));
+    let user = null;
+
+    if (useSupabase && supabase) {
+      const { data: userData, error } = await supabase
+        .from("users")
+        .select("*")
+        .eq("id", req.userId)
+        .single();
+      
+      if (error || !userData) {
+        return res.status(404).json({ message: "User not found" });
+      }
+      user = userData;
+    } else {
+      user = db.users.find(u => u.id === req.userId);
+      if (!user) {
+        return res.status(404).json({ message: "User not found" });
+      }
+    }
+
+    const responseUser = {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      avatar: user.avatar,
+      bio: user.bio,
+      location: user.location,
+      phone: user.phone,
+      verified: user.verified || false,
+      isAdmin: user.isAdmin || user.is_admin || false,
+      createdAt: user.createdAt || user.created_at,
+      followers: user.followers || 0,
+      following: user.following || 0,
+      rating: user.rating || 0,
+      totalSales: user.totalSales || 0,
+    };
+
+    res.json(responseUser);
   } catch (e) {
+    console.error("Get me error:", e);
     res.status(500).json({ message: e.message });
   }
 });
 
-// PUT /api/auth/profile
+// ──────────────────────────────────────────────────────────────────────────────
+// UPDATE PROFILE
+// ──────────────────────────────────────────────────────────────────────────────
 router.put("/profile", auth, async (req, res) => {
   try {
     const { name, bio, location, phone, avatar } = req.body;
@@ -146,43 +314,42 @@ router.put("/profile", auth, async (req, res) => {
     if (phone !== undefined) updates.phone = phone;
     if (avatar !== undefined) updates.avatar = avatar;
 
-    const { data: user, error } = await supabase
-      .from("users")
-      .update(updates)
-      .eq("id", req.userId)
-      .select()
-      .single();
+    let updatedUser = null;
 
-    if (error) throw error;
-    res.json(safeUser(user));
+    if (useSupabase && supabase) {
+      const { data: user, error } = await supabase
+        .from("users")
+        .update(updates)
+        .eq("id", req.userId)
+        .select()
+        .single();
+
+      if (error) throw error;
+      updatedUser = user;
+    } else {
+      const index = db.users.findIndex(u => u.id === req.userId);
+      if (index === -1) return res.status(404).json({ message: "User not found" });
+      
+      db.users[index] = { ...db.users[index], ...updates };
+      saveData();
+      updatedUser = db.users[index];
+    }
+
+    const responseUser = {
+      id: updatedUser.id,
+      name: updatedUser.name,
+      email: updatedUser.email,
+      avatar: updatedUser.avatar,
+      bio: updatedUser.bio,
+      location: updatedUser.location,
+      phone: updatedUser.phone,
+      verified: updatedUser.verified || false,
+      isAdmin: updatedUser.isAdmin || updatedUser.is_admin || false,
+    };
+
+    res.json(responseUser);
   } catch (e) {
-    res.status(500).json({ message: e.message });
-  }
-});
-
-// POST /api/auth/seed-admin — sets admin password correctly (call once after deploy)
-router.post("/seed-admin", async (req, res) => {
-  try {
-    const { secret } = req.body;
-    if (secret !== process.env.SEED_SECRET && secret !== "dealsara-seed-2024")
-      return res.status(403).json({ message: "Forbidden" });
-
-    const hashed = await bcrypt.hash("Password100@", 10);
-    const { data, error } = await supabase
-      .from("users")
-      .upsert({
-        name: "Admin",
-        email: "karanmandape786@gmail.com",
-        password: hashed,
-        verified: true,
-        is_admin: true,
-      }, { onConflict: "email" })
-      .select()
-      .single();
-
-    if (error) throw error;
-    res.json({ message: "Admin seeded", id: data.id });
-  } catch (e) {
+    console.error("Profile update error:", e);
     res.status(500).json({ message: e.message });
   }
 });
