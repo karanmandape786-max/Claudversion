@@ -1,13 +1,34 @@
-const { createClient } = require("@supabase/supabase-js");
+// supabase.js
+const { createClient } = require('@supabase/supabase-js');
 
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_ANON_KEY;
+// Validate and clean environment variables
+const supabaseUrl = process.env.SUPABASE_URL?.trim();
+const supabaseKey = process.env.SUPABASE_ANON_KEY?.trim();
 
-if (!supabaseUrl || !supabaseKey) {
-  console.error("❌ Missing SUPABASE_URL or SUPABASE_ANON_KEY in environment");
+if (!supabaseUrl) {
+  console.error('❌ SUPABASE_URL is not set in environment variables');
   process.exit(1);
 }
 
-const supabase = createClient(supabaseUrl, supabaseKey);
+if (!supabaseKey) {
+  console.error('❌ SUPABASE_ANON_KEY is not set in environment variables');
+  process.exit(1);
+}
 
-module.exports = supabase;
+// Ensure URL has proper format
+if (!supabaseUrl.startsWith('https://')) {
+  console.error('❌ SUPABASE_URL must start with https://. Current value:', supabaseUrl);
+  process.exit(1);
+}
+
+// Create Supabase client
+const supabase = createClient(supabaseUrl, supabaseKey, {
+  auth: {
+    persistSession: false,
+    autoRefreshToken: false,
+  },
+});
+
+console.log('✅ Supabase client initialized with URL:', supabaseUrl);
+
+module.exports = { supabase };
