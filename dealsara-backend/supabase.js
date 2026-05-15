@@ -31,4 +31,4 @@ const supabase = createClient(supabaseUrl, supabaseKey, {
 
 console.log('✅ Supabase client initialized with URL:', supabaseUrl);
 
-module.exports = { supabase };
+module.exports = supabase;
