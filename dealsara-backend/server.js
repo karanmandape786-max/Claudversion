@@ -1,3 +1,4 @@
+
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
@@ -21,7 +22,7 @@ app.use(cors({
     if (allowedOrigins.includes(origin)) return callback(null, true);
     if (origin && origin.endsWith(".vercel.app")) return callback(null, true);
     if (origin && origin.endsWith(".onrender.com")) return callback(null, true);
-    if (process.env.NODE_ENV !== "production" && 
+    if (process.env.NODE_ENV !== "production" &&
         (origin?.includes("localhost") || origin?.includes("127.0.0.1"))) {
       return callback(null, true);
     }
@@ -37,20 +38,20 @@ app.options("*", cors());
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
-// ── HEALTH ROUTES (MUST BE BEFORE OTHER ROUTES) ────────────────────────────
+// ── HEALTH ROUTES ──────────────────────────────────────────────────────────
 app.get("/health", (req, res) => {
-  res.json({ 
-    status: "healthy", 
-    uptime: process.uptime(), 
-    timestamp: new Date().toISOString() 
+  res.json({
+    status: "healthy",
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString()
   });
 });
 
 app.get("/", (req, res) => {
-  res.json({ 
-    status: "ok", 
-    message: "DealSara API 🚀", 
-    version: "2.0.0", 
+  res.json({
+    status: "ok",
+    message: "DealSara API 🚀",
+    version: "2.0.0",
     timestamp: new Date().toISOString(),
     cors: "enabled",
     endpoints: {
@@ -64,17 +65,18 @@ app.get("/", (req, res) => {
 });
 
 // ── API ROUTES ────────────────────────────────────────────────────────────────
-app.use("/api/auth",        require("./routes/auth"));
-app.use("/api/ads",         require("./routes/ads"));
-app.use("/api/reels",       require("./routes/reels"));
-app.use("/api/chat",        require("./routes/chat"));
-app.use("/api/users",       require("./routes/users"));
-app.use("/api/admin",       require("./routes/admin"));
-app.use("/api/competition", require("./routes/competition"));
+app.use("/api/auth",         require("./routes/auth"));
+app.use("/api/ads",          require("./routes/ads"));
+app.use("/api/reels",        require("./routes/reels"));
+app.use("/api/chat",         require("./routes/chat"));
+app.use("/api/users",        require("./routes/users"));
+app.use("/api/admin",        require("./routes/admin"));
+app.use("/api/competition",  require("./routes/competition"));
+app.use("/api/competitions", require("./routes/competition")); // ← custom competitions slider
 
 // ── 404 Handler ───────────────────────────────────────────────────────────────
 app.use((req, res) => {
-  res.status(404).json({ 
+  res.status(404).json({
     message: `Route not found: ${req.method} ${req.url}`,
     availableEndpoints: ["/", "/health", "/api/auth", "/api/ads", "/api/reels", "/api/users"]
   });
@@ -90,3 +92,4 @@ app.listen(PORT, () => {
   console.log(`✅ DealSara backend on port ${PORT}`);
   console.log(`📍 Health: http://localhost:${PORT}/health`);
 });
+
