@@ -1,4 +1,3 @@
-
 const router = require("express").Router();
 const { Pool } = require("pg");
 const { v4: uuidv4 } = require("uuid");
@@ -131,6 +130,99 @@ router.get("/all", optionalAuth, async (req, res) => {
       "SELECT * FROM competitions ORDER BY created_at DESC"
     );
     res.json({ competitions: comps });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
+// GET /api/competition/:id — get a specific competition with leaderboard
+router.get("/detail/:id", optionalAuth, async (req, res) => {
+  try {
+    // Try custom_competitions first
+    const { rows: customRows } = await pool.query("SELECT * FROM custom_competitions WHERE id=$1", [req.params.id]);
+    if (customRows.length > 0) {
+      const comp = customRows[0];
+      // Get registrations for this specific competition
+      const { rows: countRows } = await pool.query(
+        "SELECT COUNT(*) FROM competition_registrations WHERE competition_id=$1::text AND payment_status='paid'",
+        [String(comp.id)]
+      );
+      const { rows: regs } = await pool.query(
+        `SELECT cr.*, u.name as user_name, u.avatar as user_avatar
+         FROM competition_registrations cr
+         LEFT JOIN users u ON u.id = cr.user_id
+         WHERE cr.competition_id=$1::text AND cr.payment_status='paid'`,
+        [String(comp.id)]
+      );
+      const leaderboard = await Promise.all(regs.map(async reg => {
+        const { rows: reels } = await pool.query(
+          "SELECT views, likes FROM reels WHERE user_id=$1 AND is_competition=true AND (competition_id=$2::text OR competition_id IS NULL)",
+          [reg.user_id, String(comp.id)]
+        );
+        const totalViews = reels.reduce((s, r) => s + (r.views || 0), 0);
+        const totalLikes = reels.reduce((s, r) => s + (r.likes || 0), 0);
+        return {
+          userId: reg.user_id,
+          name: reg.account_name || reg.user_name || reg.real_name,
+          handle: (reg.account_name || reg.real_name || "user").toLowerCase().replace(/\s/g, ""),
+          avatar: reg.user_avatar || null,
+          views: totalViews, likes: totalLikes,
+          score: totalViews + totalLikes * 2,
+          reelCount: reels.length,
+        };
+      }));
+      leaderboard.sort((a, b) => b.score - a.score);
+      return res.json({
+        competition: { ...comp, registeredCount: parseInt(countRows[0].count) || 0 },
+        leaderboard: leaderboard.map((p, i) => ({ ...p, rank: i + 1 })),
+      });
+    }
+    // Try main competitions table
+    const { rows: mainRows } = await pool.query("SELECT * FROM competitions WHERE id=$1", [req.params.id]);
+    if (!mainRows.length) return res.status(404).json({ message: "Competition not found" });
+    const comp = mainRows[0];
+    const { rows: countRows } = await pool.query(
+      "SELECT COUNT(*) FROM competition_registrations WHERE competition_id=$1 AND payment_status='paid'", [comp.id]
+    );
+    const { rows: regs } = await pool.query(
+      `SELECT cr.*, u.name as user_name, u.avatar as user_avatar
+       FROM competition_registrations cr LEFT JOIN users u ON u.id = cr.user_id
+       WHERE cr.competition_id=$1 AND cr.payment_status='paid'`, [comp.id]
+    );
+    const leaderboard = await Promise.all(regs.map(async reg => {
+      const { rows: reels } = await pool.query(
+        "SELECT views, likes FROM reels WHERE user_id=$1 AND is_competition=true", [reg.user_id]
+      );
+      const totalViews = reels.reduce((s, r) => s + (r.views || 0), 0);
+      const totalLikes = reels.reduce((s, r) => s + (r.likes || 0), 0);
+      return {
+        userId: reg.user_id,
+        name: reg.account_name || reg.user_name || reg.real_name,
+        handle: (reg.account_name || reg.real_name || "user").toLowerCase().replace(/\s/g, ""),
+        avatar: reg.user_avatar || null,
+        views: totalViews, likes: totalLikes,
+        score: totalViews + totalLikes * 2,
+        reelCount: reels.length,
+      };
+    }));
+    leaderboard.sort((a, b) => b.score - a.score);
+    res.json({
+      competition: { ...comp, registeredCount: parseInt(countRows[0].count) || 0 },
+      leaderboard: leaderboard.map((p, i) => ({ ...p, rank: i + 1 })),
+    });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
+// GET /api/competition/my-status-for/:id — check registration for a specific competition
+router.get("/my-status-for/:id", auth, async (req, res) => {
+  try {
+    const { rows: reg } = await pool.query(
+      "SELECT * FROM competition_registrations WHERE competition_id=$1::text AND user_id=$2",
+      [req.params.id, req.userId]
+    );
+    res.json({ registered: reg.length > 0, registration: reg[0] || null });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
@@ -381,4 +473,3 @@ router.delete("/:id", adminAuth, async (req, res) => {
 });
 
 module.exports = router;
-
