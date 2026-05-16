@@ -2,12 +2,17 @@ const router = require("express").Router();
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { v4: uuidv4 } = require("uuid");
-const { db, saveData, supabase, useSupabase } = require("../db");
+const { Pool } = require("pg");
 const { auth, JWT_SECRET } = require("../middleware/auth");
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+});
 
 function makeToken(user) {
   return jwt.sign(
-    { id: user.id, email: user.email, isAdmin: user.isAdmin || user.is_admin || false },
+    { id: user.id, email: user.email, isAdmin: user.is_admin || user.isAdmin || false },
     JWT_SECRET,
     { expiresIn: "30d" }
   );
@@ -15,144 +20,81 @@ function makeToken(user) {
 
 function safeUser(u) {
   const { password, ...rest } = u;
-  return rest;
+  return {
+    id: rest.id,
+    name: rest.name,
+    email: rest.email,
+    avatar: rest.avatar || null,
+    bio: rest.bio || "",
+    location: rest.location || "",
+    phone: rest.phone || "",
+    verified: rest.verified || false,
+    isAdmin: rest.is_admin || rest.isAdmin || false,
+    createdAt: rest.created_at || rest.createdAt,
+    followers: rest.followers || 0,
+    following: rest.following || 0,
+  };
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// REGISTER
-// ──────────────────────────────────────────────────────────────────────────────
+// ── REGISTER ──────────────────────────────────────────────────────────────────
 router.post("/register", async (req, res) => {
   try {
     const { name, email, password } = req.body;
-    if (!name || !email || !password) {
+    if (!name || !email || !password)
       return res.status(400).json({ message: "Name, email and password are required" });
-    }
 
-    let existingUser = null;
-
-    if (useSupabase && supabase) {
-      const { data: existing } = await supabase
-        .from("users")
-        .select("id")
-        .ilike("email", email.trim())
-        .single();
-      existingUser = existing;
-    } else {
-      existingUser = db.users.find(u => u.email === email);
-    }
-
-    if (existingUser) {
+    const { rows: existing } = await pool.query(
+      "SELECT id FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1",
+      [email.trim()]
+    );
+    if (existing.length > 0)
       return res.status(409).json({ message: "Email already in use" });
-    }
 
     const hashed = await bcrypt.hash(password, 10);
-    const newUser = {
-      id: uuidv4(),
-      name: name.trim(),
-      email: email.toLowerCase().trim(),
-      password: hashed,
-      avatar: null,
-      bio: "",
-      location: "",
-      phone: "",
-      verified: false,
-      isAdmin: false,
-      createdAt: new Date().toISOString(),
-      followers: 0,
-      following: 0,
-      rating: 0,
-      totalSales: 0,
-    };
+    const id = uuidv4();
 
-    let savedUser = newUser;
+    const { rows } = await pool.query(
+      `INSERT INTO users (id, name, email, password, verified, is_admin, created_at)
+       VALUES ($1, $2, $3, $4, false, false, NOW())
+       RETURNING *`,
+      [id, name.trim(), email.toLowerCase().trim(), hashed]
+    );
 
-    if (useSupabase && supabase) {
-      const { data: user, error } = await supabase
-        .from("users")
-        .insert({
-          id: newUser.id,
-          name: newUser.name,
-          email: newUser.email,
-          password: hashed,
-          verified: false,
-          is_admin: false,
-          created_at: newUser.createdAt,
-        })
-        .select()
-        .single();
-
-      if (error) throw error;
-      savedUser = { ...newUser, ...user };
-    } else {
-      db.users.push(newUser);
-      saveData();
-    }
-
-    res.status(201).json({ user: safeUser(savedUser), token: makeToken(savedUser) });
+    const user = rows[0];
+    res.status(201).json({ user: safeUser(user), token: makeToken(user) });
   } catch (e) {
-    console.error("Register error:", e);
+    console.error("Register error:", e.message);
     res.status(500).json({ message: e.message });
   }
 });
 
-// ──────────────────────────────────────────────────────────────────────────────
-// LOGIN
-// ──────────────────────────────────────────────────────────────────────────────
+// ── LOGIN ─────────────────────────────────────────────────────────────────────
 router.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
-    if (!email || !password) {
+    if (!email || !password)
       return res.status(400).json({ message: "Email and password required" });
-    }
 
-    let user = null;
-
-    if (useSupabase && supabase) {
-      const { data: userData, error } = await supabase
-        .from("users")
-        .select("*")
-        .ilike("email", email.trim())
-        .single();
-
-      if (error || !userData) {
-        return res.status(401).json({ message: "Invalid email or password" });
-      }
-      user = userData;
-    } else {
-      user = db.users.find(u => u.email === email);
-      if (!user) {
-        return res.status(401).json({ message: "Invalid email or password" });
-      }
-    }
-
-    const valid = await bcrypt.compare(password, user.password || "");
-    if (!valid) {
+    const { rows } = await pool.query(
+      "SELECT * FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1",
+      [email.trim()]
+    );
+    if (rows.length === 0)
       return res.status(401).json({ message: "Invalid email or password" });
-    }
 
-    const responseUser = {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      avatar: user.avatar,
-      bio: user.bio,
-      location: user.location,
-      phone: user.phone,
-      verified: user.verified || false,
-      isAdmin: user.isAdmin || user.is_admin || false,
-      createdAt: user.createdAt || user.created_at,
-    };
+    const user = rows[0];
+    const valid = await bcrypt.compare(password, user.password || "");
+    if (!valid)
+      return res.status(401).json({ message: "Invalid email or password" });
 
-    res.json({ user: responseUser, token: makeToken(responseUser) });
+    res.json({ user: safeUser(user), token: makeToken(user) });
   } catch (e) {
-    console.error("Login error:", e);
+    console.error("Login error:", e.message);
     res.status(500).json({ message: e.message });
   }
 });
 
-// ──────────────────────────────────────────────────────────────────────────────
-// GOOGLE LOGIN
-// ──────────────────────────────────────────────────────────────────────────────
+// ── GOOGLE LOGIN ──────────────────────────────────────────────────────────────
 router.post("/google", async (req, res) => {
   try {
     const { credential } = req.body;
@@ -164,176 +106,75 @@ router.post("/google", async (req, res) => {
     const { email, name, sub, picture } = payload;
     if (!email) return res.status(400).json({ message: "Email not in token" });
 
-    let user = null;
+    let { rows } = await pool.query(
+      "SELECT * FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1",
+      [email.toLowerCase()]
+    );
 
-    if (useSupabase && supabase) {
-      let { data: existingUser } = await supabase
-        .from("users")
-        .select("*")
-        .ilike("email", email.toLowerCase())
-        .single();
-
-      if (!existingUser) {
-        const { data: newUser, error } = await supabase
-          .from("users")
-          .insert({
-            id: uuidv4(),
-            name: name || email.split("@")[0],
-            email: email.toLowerCase(),
-            password: "",
-            avatar: picture || null,
-            google_id: sub,
-            verified: true,
-            is_admin: false,
-            created_at: new Date().toISOString(),
-          })
-          .select()
-          .single();
-        if (error) throw error;
-        user = newUser;
-      } else {
-        user = existingUser;
-      }
+    let user;
+    if (rows.length === 0) {
+      const { rows: newRows } = await pool.query(
+        `INSERT INTO users (id, name, email, password, avatar, google_id, verified, is_admin, created_at)
+         VALUES ($1, $2, $3, '', $4, $5, true, false, NOW())
+         RETURNING *`,
+        [uuidv4(), name || email.split("@")[0], email.toLowerCase(), picture || null, sub]
+      );
+      user = newRows[0];
     } else {
-      let existingUser = db.users.find(u => u.email === email);
-      if (!existingUser) {
-        const newUser = {
-          id: uuidv4(),
-          name: name || email.split("@")[0],
-          email: email.toLowerCase(),
-          password: "",
-          avatar: picture || null,
-          google_id: sub,
-          verified: true,
-          isAdmin: false,
-          createdAt: new Date().toISOString(),
-          followers: 0,
-          following: 0,
-          rating: 0,
-          totalSales: 0,
-        };
-        db.users.push(newUser);
-        saveData();
-        user = newUser;
-      } else {
-        user = existingUser;
-      }
+      user = rows[0];
     }
 
-    const responseUser = {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      avatar: user.avatar,
-      verified: user.verified || true,
-      isAdmin: user.isAdmin || user.is_admin || false,
-    };
-
-    res.json({ user: responseUser, token: makeToken(responseUser) });
+    res.json({ user: safeUser(user), token: makeToken(user) });
   } catch (e) {
-    console.error("Google login error:", e);
+    console.error("Google login error:", e.message);
     res.status(500).json({ message: e.message });
   }
 });
 
-// ──────────────────────────────────────────────────────────────────────────────
-// GET CURRENT USER (ME)
-// ──────────────────────────────────────────────────────────────────────────────
+// ── GET ME ────────────────────────────────────────────────────────────────────
 router.get("/me", auth, async (req, res) => {
   try {
-    let user = null;
-
-    if (useSupabase && supabase) {
-      const { data: userData, error } = await supabase
-        .from("users")
-        .select("*")
-        .eq("id", req.userId)
-        .single();
-
-      if (error || !userData) {
-        return res.status(404).json({ message: "User not found" });
-      }
-      user = userData;
-    } else {
-      user = db.users.find(u => u.id === req.userId);
-      if (!user) {
-        return res.status(404).json({ message: "User not found" });
-      }
-    }
-
-    const responseUser = {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      avatar: user.avatar,
-      bio: user.bio,
-      location: user.location,
-      phone: user.phone,
-      verified: user.verified || false,
-      isAdmin: user.isAdmin || user.is_admin || false,
-      createdAt: user.createdAt || user.created_at,
-      followers: user.followers || 0,
-      following: user.following || 0,
-      rating: user.rating || 0,
-      totalSales: user.totalSales || 0,
-    };
-
-    res.json(responseUser);
+    const { rows } = await pool.query("SELECT * FROM users WHERE id = $1", [req.userId]);
+    if (rows.length === 0) return res.status(404).json({ message: "User not found" });
+    res.json(safeUser(rows[0]));
   } catch (e) {
-    console.error("Get me error:", e);
     res.status(500).json({ message: e.message });
   }
 });
 
-// ──────────────────────────────────────────────────────────────────────────────
-// UPDATE PROFILE
-// ──────────────────────────────────────────────────────────────────────────────
+// ── UPDATE PROFILE ────────────────────────────────────────────────────────────
 router.put("/profile", auth, async (req, res) => {
   try {
     const { name, bio, location, phone, avatar } = req.body;
-    const updates = {};
-    if (name !== undefined) updates.name = name.trim();
-    if (bio !== undefined) updates.bio = bio;
-    if (location !== undefined) updates.location = location;
-    if (phone !== undefined) updates.phone = phone;
-    if (avatar !== undefined) updates.avatar = avatar;
-
-    let updatedUser = null;
-
-    if (useSupabase && supabase) {
-      const { data: user, error } = await supabase
-        .from("users")
-        .update(updates)
-        .eq("id", req.userId)
-        .select()
-        .single();
-
-      if (error) throw error;
-      updatedUser = user;
-    } else {
-      const index = db.users.findIndex(u => u.id === req.userId);
-      if (index === -1) return res.status(404).json({ message: "User not found" });
-
-      db.users[index] = { ...db.users[index], ...updates };
-      saveData();
-      updatedUser = db.users[index];
-    }
-
-    const responseUser = {
-      id: updatedUser.id,
-      name: updatedUser.name,
-      email: updatedUser.email,
-      avatar: updatedUser.avatar,
-      bio: updatedUser.bio,
-      location: updatedUser.location,
-      phone: updatedUser.phone,
-      verified: updatedUser.verified || false,
-      isAdmin: updatedUser.isAdmin || updatedUser.is_admin || false,
-    };
-
-    res.json(responseUser);
+    const { rows } = await pool.query(
+      `UPDATE users SET
+        name = COALESCE($1, name),
+        bio = COALESCE($2, bio),
+        location = COALESCE($3, location),
+        phone = COALESCE($4, phone),
+        avatar = COALESCE($5, avatar)
+       WHERE id = $6 RETURNING *`,
+      [name || null, bio || null, location || null, phone || null, avatar || null, req.userId]
+    );
+    if (rows.length === 0) return res.status(404).json({ message: "User not found" });
+    res.json(safeUser(rows[0]));
   } catch (e) {
-    console.error("Profile update error:", e);
+    res.status(500).json({ message: e.message });
+  }
+});
+
+// ── SEED ADMIN ────────────────────────────────────────────────────────────────
+router.post("/seed-admin", async (req, res) => {
+  try {
+    const hashed = await bcrypt.hash("Password100@", 10);
+    await pool.query(
+      `INSERT INTO users (id, name, email, password, verified, is_admin, created_at)
+       VALUES ($1, 'Admin', 'karanmandape786@gmail.com', $2, true, true, NOW())
+       ON CONFLICT (email) DO UPDATE SET password = $2, is_admin = true`,
+      [uuidv4(), hashed]
+    );
+    res.json({ message: "✅ Admin seeded successfully" });
+  } catch (e) {
     res.status(500).json({ message: e.message });
   }
 });
