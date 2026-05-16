@@ -1,3 +1,4 @@
+
 const router = require("express").Router();
 const { Pool } = require("pg");
 const { v4: uuidv4 } = require("uuid");
@@ -13,7 +14,117 @@ const VALID_REFERRAL_CODES = [
   "DEALSARAXLO","DEALSARAPOP","DEALSARAKKIP","DEALSARA5I","DEALSARASTL"
 ];
 
-// GET /api/competition/all — all competitions (for slider)
+// ── CREATE TABLE for custom competitions (auto-runs on startup) ──────────────
+pool.query(`
+  CREATE TABLE IF NOT EXISTS custom_competitions (
+    id SERIAL PRIMARY KEY,
+    title TEXT NOT NULL,
+    subtitle TEXT,
+    description TEXT,
+    prize TEXT NOT NULL,
+    emoji TEXT DEFAULT '🏆',
+    gradient TEXT,
+    badge TEXT DEFAULT 'LIVE NOW',
+    cta TEXT DEFAULT 'Learn More →',
+    entry_fee TEXT,
+    deadline TIMESTAMPTZ,
+    link TEXT,
+    active BOOLEAN DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  )
+`).catch(console.error);
+
+// ── CUSTOM COMPETITIONS (homepage slider — visible to ALL users) ─────────────
+
+// GET /api/competitions/custom — public
+router.get("/custom", async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      "SELECT * FROM custom_competitions WHERE active=true ORDER BY created_at DESC"
+    );
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
+// POST /api/competitions/custom — admin only
+router.post("/custom", adminAuth, async (req, res) => {
+  const { title, subtitle, description, prize, emoji, gradient, badge, cta, entry_fee, deadline, link, active } = req.body;
+  if (!title || !prize) return res.status(400).json({ message: "Title and prize are required" });
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO custom_competitions
+        (title, subtitle, description, prize, emoji, gradient, badge, cta, entry_fee, deadline, link, active)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+      [
+        title,
+        subtitle   || null,
+        description|| null,
+        prize,
+        emoji      || "🏆",
+        gradient   || null,
+        badge      || "LIVE NOW",
+        cta        || "Learn More →",
+        entry_fee  || null,
+        deadline   || null,
+        link       || null,
+        active !== false,
+      ]
+    );
+    res.status(201).json(rows[0]);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
+// PUT /api/competitions/custom/:id — admin only
+router.put("/custom/:id", adminAuth, async (req, res) => {
+  const { title, subtitle, description, prize, emoji, gradient, badge, cta, entry_fee, deadline, link, active } = req.body;
+  if (!title || !prize) return res.status(400).json({ message: "Title and prize are required" });
+  try {
+    const { rows } = await pool.query(
+      `UPDATE custom_competitions SET
+        title=$1, subtitle=$2, description=$3, prize=$4,
+        emoji=$5, gradient=$6, badge=$7, cta=$8,
+        entry_fee=$9, deadline=$10, link=$11, active=$12
+       WHERE id=$13 RETURNING *`,
+      [
+        title,
+        subtitle   || null,
+        description|| null,
+        prize,
+        emoji      || "🏆",
+        gradient   || null,
+        badge      || "LIVE NOW",
+        cta        || "Learn More →",
+        entry_fee  || null,
+        deadline   || null,
+        link       || null,
+        active !== false,
+        req.params.id,
+      ]
+    );
+    if (!rows.length) return res.status(404).json({ message: "Competition not found" });
+    res.json(rows[0]);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
+// DELETE /api/competitions/custom/:id — admin only
+router.delete("/custom/:id", adminAuth, async (req, res) => {
+  try {
+    await pool.query("DELETE FROM custom_competitions WHERE id=$1", [req.params.id]);
+    res.json({ deleted: true });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
+// ── EXISTING COMPETITION ROUTES ──────────────────────────────────────────────
+
+// GET /api/competition/all — all main competitions
 router.get("/all", optionalAuth, async (req, res) => {
   try {
     const { rows: comps } = await pool.query(
@@ -55,13 +166,13 @@ router.get("/current", optionalAuth, async (req, res) => {
       const totalViews = reels.reduce((s, r) => s + (r.views || 0), 0);
       const totalLikes = reels.reduce((s, r) => s + (r.likes || 0), 0);
       return {
-        userId: reg.user_id,
-        name: reg.account_name || reg.user_name || reg.real_name,
-        handle: (reg.account_name || reg.real_name || "user").toLowerCase().replace(/\s/g, ""),
-        avatar: reg.user_avatar || null,
-        views: totalViews,
-        likes: totalLikes,
-        score: totalViews + totalLikes * 2,
+        userId:    reg.user_id,
+        name:      reg.account_name || reg.user_name || reg.real_name,
+        handle:    (reg.account_name || reg.real_name || "user").toLowerCase().replace(/\s/g, ""),
+        avatar:    reg.user_avatar || null,
+        views:     totalViews,
+        likes:     totalLikes,
+        score:     totalViews + totalLikes * 2,
         reelCount: reels.length,
       };
     }));
@@ -112,8 +223,14 @@ router.post("/register", auth, async (req, res) => {
       `INSERT INTO competition_registrations
         (id, competition_id, user_id, real_name, account_name, email, phone, referral_code, payment_status, amount_paid, registered_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9,NOW()) RETURNING *`,
-      [uuidv4(), comp.id, req.userId, realName.trim(), accountName.trim(),
-       email.toLowerCase().trim(), phone || "", referralCode?.toUpperCase() || null, amount]
+      [
+        uuidv4(), comp.id, req.userId,
+        realName.trim(), accountName.trim(),
+        email.toLowerCase().trim(),
+        phone || "",
+        referralCode?.toUpperCase() || null,
+        amount,
+      ]
     );
 
     res.status(201).json({ registration: reg[0], amount, message: `Registration created. Amount to pay: ₹${amount}` });
@@ -143,7 +260,10 @@ router.get("/my-status", auth, async (req, res) => {
 // GET /api/competition/validate-referral/:code
 router.get("/validate-referral/:code", (req, res) => {
   const code = req.params.code?.trim().toUpperCase();
-  res.json({ valid: VALID_REFERRAL_CODES.includes(code), discount: VALID_REFERRAL_CODES.includes(code) ? 5 : 0 });
+  res.json({
+    valid:    VALID_REFERRAL_CODES.includes(code),
+    discount: VALID_REFERRAL_CODES.includes(code) ? 5 : 0,
+  });
 });
 
 // POST /api/competition/payment-callback
@@ -161,7 +281,7 @@ router.post("/payment-callback", async (req, res) => {
   }
 });
 
-// ADMIN: get all registrations
+// GET /api/competition/registrations — admin: all registrations
 router.get("/registrations", adminAuth, async (req, res) => {
   try {
     const { rows: compRows } = await pool.query("SELECT * FROM competitions ORDER BY created_at DESC LIMIT 1");
@@ -186,7 +306,7 @@ router.get("/registrations", adminAuth, async (req, res) => {
   }
 });
 
-// ADMIN: mark paid
+// PUT /api/competition/registrations/:id/paid — admin: mark paid
 router.put("/registrations/:id/paid", adminAuth, async (req, res) => {
   try {
     const { rows } = await pool.query(
@@ -199,19 +319,23 @@ router.put("/registrations/:id/paid", adminAuth, async (req, res) => {
   }
 });
 
-// ADMIN: create competition
+// POST /api/competition/create — admin: create main competition
 router.post("/create", adminAuth, async (req, res) => {
   try {
     const { name, description, prize, entry_fee, discounted_fee, reg_opens, reg_closes, starts_at, results_at, status } = req.body;
     if (!name) return res.status(400).json({ message: "Name required" });
 
     const { rows } = await pool.query(
-      `INSERT INTO competitions (id, name, description, prize, entry_fee, discounted_fee, reg_opens, reg_closes, starts_at, results_at, status, created_at)
+      `INSERT INTO competitions
+        (id, name, description, prize, entry_fee, discounted_fee, reg_opens, reg_closes, starts_at, results_at, status, created_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW()) RETURNING *`,
-      [uuidv4(), name, description || "", prize || "₹5,000",
-       entry_fee || 39, discounted_fee || 34,
-       reg_opens || null, reg_closes || null, starts_at || null, results_at || null,
-       status || "upcoming"]
+      [
+        uuidv4(), name, description || "", prize || "₹5,000",
+        entry_fee || 39, discounted_fee || 34,
+        reg_opens || null, reg_closes || null,
+        starts_at || null, results_at || null,
+        status || "upcoming",
+      ]
     );
     res.status(201).json({ competition: rows[0] });
   } catch (e) {
@@ -219,7 +343,7 @@ router.post("/create", adminAuth, async (req, res) => {
   }
 });
 
-// ADMIN: update competition
+// PUT /api/competition/:id — admin: update main competition
 router.put("/:id", adminAuth, async (req, res) => {
   try {
     const { name, description, prize, entry_fee, discounted_fee, reg_opens, reg_closes, starts_at, results_at, status } = req.body;
@@ -231,9 +355,13 @@ router.put("/:id", adminAuth, async (req, res) => {
         reg_closes=COALESCE($7,reg_closes), starts_at=COALESCE($8,starts_at),
         results_at=COALESCE($9,results_at), status=COALESCE($10,status)
        WHERE id=$11 RETURNING *`,
-      [name||null, description||null, prize||null, entry_fee||null,
-       discounted_fee||null, reg_opens||null, reg_closes||null,
-       starts_at||null, results_at||null, status||null, req.params.id]
+      [
+        name||null, description||null, prize||null,
+        entry_fee||null, discounted_fee||null,
+        reg_opens||null, reg_closes||null,
+        starts_at||null, results_at||null,
+        status||null, req.params.id,
+      ]
     );
     if (!rows.length) return res.status(404).json({ message: "Competition not found" });
     res.json({ competition: rows[0] });
@@ -242,7 +370,7 @@ router.put("/:id", adminAuth, async (req, res) => {
   }
 });
 
-// ADMIN: delete competition
+// DELETE /api/competition/:id — admin: delete main competition
 router.delete("/:id", adminAuth, async (req, res) => {
   try {
     await pool.query("DELETE FROM competitions WHERE id=$1", [req.params.id]);
@@ -253,3 +381,4 @@ router.delete("/:id", adminAuth, async (req, res) => {
 });
 
 module.exports = router;
+
